@@ -221,13 +221,45 @@ if st.session_state.stage == "registered":
         # 取引日を文字列化（"YYYY-MM-DD"）
         txn_date_str = st.session_state.txn_date.strftime("%Y-%m-%d")
 
-        # INSERT 文を実行（create_at カラムは省略 → DEFAULT CURRENT_TIMESTAMP が自動挿入される）
+        # 過去の取引履歴を取得（同一銘柄、BUY/SEL両方）
+        cur = c.execute(
+            "SELECT txn_type, quantity, price FROM transactions WHERE security_id=? ORDER BY txn_date, transaction_id",
+            (sid,)
+        )
+        rows = cur.fetchall()
+        # 保有株数・保有コストを計算
+        holding_qty = 0.0
+        holding_cost = 0.0
+        for txn_type, qty, price in rows:
+            if txn_type == "BUY":
+                holding_cost += qty * price
+                holding_qty += qty
+            elif txn_type == "SEL":
+                if holding_qty > 0:
+                    # 売却分のコストは直近の平均単価で減算
+                    avg = holding_cost / holding_qty if holding_qty > 0 else 0
+                    sell_qty = min(qty, holding_qty)
+                    holding_cost -= avg * sell_qty
+                    holding_qty -= sell_qty
+        # 今回の取引を反映
+        if st.session_state.txn_type == "BUY":
+            holding_cost += st.session_state.qty * st.session_state.price
+            holding_qty += st.session_state.qty
+        elif st.session_state.txn_type == "SEL":
+            if holding_qty > 0:
+                avg = holding_cost / holding_qty if holding_qty > 0 else 0
+                sell_qty = min(st.session_state.qty, holding_qty)
+                holding_cost -= avg * sell_qty
+                holding_qty -= sell_qty
+        moving_average = holding_cost / holding_qty if holding_qty > 0 else 0
+
+        # INSERT 文を実行（moving_averageカラムを追加）
         c.execute(
             """
             INSERT INTO transactions
-                (security_id, txn_type, quantity, price, txn_date)
+                (security_id, txn_type, quantity, price, txn_date, moving_average)
             VALUES
-                (?, ?, ?, ?, ?)
+                (?, ?, ?, ?, ?, ?)
             """,
             (
                 sid,
@@ -235,6 +267,7 @@ if st.session_state.stage == "registered":
                 st.session_state.qty,
                 st.session_state.price,
                 txn_date_str,
+                moving_average
             )
         )
         c.commit()

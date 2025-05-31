@@ -500,45 +500,77 @@ def load_transactions_period(db_file: Path, start_date: date, end_date: date) ->
 # 3) 最新株価を API で取得
 # ------------------------------------------------------
 # @st.cache_data(ttl=900, show_spinner="最新株価取得中…")
+import traceback
+
 def fetch_current_prices(codes: list[str]) -> dict[str, float]:
     """
     Yahoo Finance API から最新終値を取得。
     日本株コード（7203 など）は自動で '.T' を付与して呼び出す。
     戻り値: { '7203': 3075.5, ... }
     """
+    st.write("fetch_current_prices called")
     if not codes:
+        st.write("codes is empty")
         return {}
 
-    # yfinance のティッカー表現に変換
-    tickers = []
-    code_map = {}  # yf ティッカー → 元コード
-    for c in codes:
-        yf_code = c if "." in c else f"{c}.T"
-        tickers.append(yf_code)
-        code_map[yf_code] = c
+    try:
+        # yfinance のティッカー表現に変換
+        tickers = []
+        code_map = {}  # yf ティッカー → 元コード
+        for c in codes:
+            yf_code = c if "." in c else f"{c}.T"
+            tickers.append(yf_code)
+            code_map[yf_code] = c
 
-    # download は複数ティッカーでも一括取得できる
-    data = yf.download(
-        tickers=" ".join(tickers),
-        period="1d", interval="1d",
-        auto_adjust=False, progress=False, threads=True
-    )
+        st.write(f"tickers: {tickers}")
 
-    price_dict = {}
-    # download の戻りは MultiIndex（ティッカー, OHLCV）
-    if isinstance(data.columns, pd.MultiIndex):
-        for yf_code in tickers:
+        # download は複数ティッカーでも一括取得できる
+        data = yf.download(
+            tickers=" ".join(tickers),
+            period="1d", interval="1d",
+            auto_adjust=False, progress=False, threads=True
+        )
+
+        # st.write("yf.download result:")
+        # st.write(data)
+        # st.write(f"data.columns: {data.columns}")
+        # st.write(f"data.shape: {data.shape}")
+        # st.write(f"data.index: {data.index}")
+
+        price_dict = {}
+        # download の戻りは MultiIndex（ティッカー, OHLCV）
+        if isinstance(data.columns, pd.MultiIndex):
+            # st.write(f"MultiIndex levels: {data.columns.names}")
+            # st.write(f"MultiIndex values: {list(data.columns)}")
+            for yf_code in tickers:
+                try:
+                    st.write(f"Trying to extract price for {yf_code}")
+                    price = data[yf_code]["Close"].dropna().iloc[-1]
+                    price_dict[code_map[yf_code]] = float(price)
+                except Exception as e:
+                    st.write(f"Error extracting price for {yf_code}: {e}")
+                    continue
+        else:  # 1 銘柄のみ
             try:
-                price = data[yf_code]["Close"].dropna().iloc[-1]
+                # st.write("Single ticker mode")
+                # st.write(f"Available columns: {list(data.columns)}")
+                price = data["Close"].dropna().iloc[-1]
+                yf_code = tickers[0]
                 price_dict[code_map[yf_code]] = float(price)
-            except Exception:
-                continue
-    else:  # 1 銘柄のみ
-        price = data["Close"].dropna().iloc[-1]
-        yf_code = tickers[0]
-        price_dict[code_map[yf_code]] = float(price)
+            except Exception as e:
+                st.write(f"Error extracting price for single ticker: {e}")
 
-    return price_dict
+        st.write(f"price_dict: {price_dict}")
+
+        return price_dict
+    except Exception as e:
+        import sys
+        import io
+        tb = io.StringIO()
+        traceback.print_exc(file=tb)
+        st.error(f"最新株価取得時にエラーが発生しました: {e}")
+        st.code(tb.getvalue())
+        return {}
 
 # ------------------------------------------------------
 # 4) 画面レイアウト
@@ -605,6 +637,15 @@ for code in all_codes:
     latest_qty      = qty
     latest_avg_cost = cost_basis / qty if qty else 0.0
 
+    # --- 最新の平均取得価額（moving_average）をDBから取得 ---
+    with sqlite3.connect(db_path) as conn:
+        cur = conn.execute(
+            "SELECT moving_average FROM transactions t JOIN securities s ON t.security_id = s.security_id WHERE s.security_code=? AND moving_average IS NOT NULL ORDER BY DATE(t.txn_date) DESC, t.transaction_id DESC LIMIT 1",
+            (code,)
+        )
+        row = cur.fetchone()
+        latest_moving_average = row[0] if row else None
+
     # --- 指標 ---
     pct_change = (
         (latest_avg_cost - prev_avg_cost) / prev_avg_cost * 100
@@ -621,6 +662,7 @@ for code in all_codes:
         "security_name":       sec_name,
         "prev_avg_cost":       prev_avg_cost,
         "latest_avg_cost":     latest_avg_cost,
+        "latest_moving_average": latest_moving_average,
         "pct_change_%":        pct_change,
         "latest_holding_qty":  latest_qty,
         "current_price":       current_price,

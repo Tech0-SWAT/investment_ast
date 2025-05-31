@@ -95,6 +95,18 @@ def main():
     );
     """)
 
+    # --- 30%下落判定結果テーブル ---
+    conn.execute("""
+    CREATE TABLE IF NOT EXISTS drop_judgement (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        security_code TEXT,
+        year TEXT,
+        half TEXT,
+        drop_30pct INTEGER,
+        judged_at TEXT
+    );
+    """)
+
     conn.commit()
     conn.close()
     print("🎉 スキーマ（1 ユーザー版）構築完了")

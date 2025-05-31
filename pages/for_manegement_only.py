@@ -143,7 +143,118 @@ df_latest = load_positions_halfyear()
 if df_latest.empty:
     st.info("まだデータがありません。")
 else:
+    # 年・半期でソート
+    df_latest = df_latest.sort_values(["security_code", "year", "half"])
+
+    # 前期のmarket_priceを取得するために、銘柄・年・半期でシフト
+    df_latest["year"] = df_latest["year"].astype(str)
+    df_latest["prev_year"] = df_latest["year"].astype(int)
+    df_latest["prev_half"] = df_latest["half"]
+
+    # 前期の年・半期を計算
+    def get_prev_period(row):
+        y = int(row["year"])
+        h = row["half"]
+        if h == "H2":
+            return y, "H1"
+        else:
+            return y - 1, "H2"
+    prev_periods = df_latest.apply(get_prev_period, axis=1)
+    df_latest["prev_year_val"] = [y for y, h in prev_periods]
+    df_latest["prev_half_val"] = [h for y, h in prev_periods]
+
+    # 型を揃える（prev_year_valをstr型に）
+    df_latest["prev_year_val"] = df_latest["prev_year_val"].astype(str)
+
+    # 前期のmarket_priceをマージ
+    df_latest = pd.merge(
+        df_latest,
+        df_latest[["security_code", "year", "half", "market_price"]].rename(
+            columns={
+                "year": "prev_year_val",
+                "half": "prev_half_val",
+                "market_price": "prev_market_price"
+            }
+        ),
+        how="left",
+        left_on=["security_code", "prev_year_val", "prev_half_val"],
+        right_on=["security_code", "prev_year_val", "prev_half_val"]
+    )
+
+    # 前期比下落率を計算
+    df_latest["price_drop_rate"] = (
+        (df_latest["market_price"] - df_latest["prev_market_price"]) / df_latest["prev_market_price"]
+    )
+
+    # 30%下落判定
+    df_latest["drop_30pct"] = df_latest["price_drop_rate"] <= -0.3
+    # 50%下落判定
+    df_latest["drop_50pct"] = df_latest["price_drop_rate"] <= -0.5
+
+    # 判定結果を表示
     st.dataframe(
-        df_latest.sort_values(["security_code", "year", "half"]),
+        df_latest[
+            [
+                "security_code", "security_name", "year", "half",
+                "market_price", "prev_market_price", "price_drop_rate",
+                "drop_30pct", "drop_50pct"
+            ]
+        ].sort_values(["security_code", "year", "half"]),
         use_container_width=True
     )
+
+    # --- 30%下落判定結果をdrop_judgementテーブルに保存（ボタンで実行） ---
+    import datetime
+    conn = get_conn()
+    if st.button("30％下落判定結果をDBに保存", key="save_drop_30pct"):
+        for _, row in df_latest.iterrows():
+            # drop_30pctがTrue/Falseどちらも記録
+            code = row["security_code"]
+            year = str(row["year"])
+            half = row["half"]
+            drop_30 = int(row["drop_30pct"])
+            judged_at = datetime.datetime.now().isoformat(timespec="seconds")
+            # 既存レコードがあればUPDATE、なければINSERT
+            cur = conn.execute(
+                "SELECT id FROM drop_judgement WHERE security_code=? AND year=? AND half=?",
+                (code, year, half)
+            )
+            res = cur.fetchone()
+            if res:
+                conn.execute(
+                    "UPDATE drop_judgement SET drop_30pct=?, judged_at=? WHERE id=?",
+                    (drop_30, judged_at, res[0])
+                )
+            else:
+                conn.execute(
+                    "INSERT INTO drop_judgement (security_code, year, half, drop_30pct, judged_at) VALUES (?, ?, ?, ?, ?)",
+                    (code, year, half, drop_30, judged_at)
+                )
+        conn.commit()
+        st.success("30％下落判定結果をDBに保存しました。")
+
+    # --- 30%・50%下落銘柄を一つのテーブルで表示 ---
+    df_drop = df_latest[(df_latest["drop_30pct"]) | (df_latest["drop_50pct"])].copy()
+    def get_reason(row):
+        if row["drop_50pct"]:
+            return "50％下落"
+        elif row["drop_30pct"]:
+            return "30％下落"
+        else:
+            return ""
+    df_drop["下落理由"] = df_drop.apply(get_reason, axis=1)
+    st.markdown("#### 前期で30％または50％下落した銘柄一覧（理由付き）")
+    st.dataframe(
+        df_drop[
+            [
+                "security_code", "security_name", "year", "half",
+                "market_price", "prev_market_price", "price_drop_rate", "下落理由"
+            ]
+        ].sort_values(["security_code", "year", "half"]),
+        use_container_width=True
+    )
+
+    # --- drop_judgementテーブルの内容を表示 ---
+    st.markdown("#### 30%下落判定結果（DB保存）")
+    df_judge = pd.read_sql_query("SELECT * FROM drop_judgement", conn)
+    st.dataframe(df_judge, use_container_width=True)
