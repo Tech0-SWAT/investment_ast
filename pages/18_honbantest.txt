@@ -9,7 +9,7 @@ import pandas as pd
 # ─────────────────────────────
 # 1. DB 接続ユーティリティ（パスを統一）
 # ─────────────────────────────
-DB = "app.db"  # 同一ディレクトリにある app.db を想定
+DB = "../app.db"  # 同一ディレクトリにある app.db を想定
 db_path = (Path(__file__).resolve().parent / DB).resolve()
 
 @st.cache_resource

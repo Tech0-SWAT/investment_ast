@@ -95,17 +95,35 @@ def main():
     );
     """)
 
+    conn.execute("""
+    CREATE TABLE IF NOT EXISTS positions_quarter (
+        security_id    INTEGER    NOT NULL,
+        d365_code      TEXT       NOT NULL,
+        security_code  TEXT       NOT NULL,
+        security_name  TEXT       NOT NULL,
+        year           TEXT       NOT NULL,
+        quarter        TEXT       NOT NULL,
+        holding_qty    REAL       NOT NULL,
+        avg_cost       REAL       NOT NULL,
+        market_price   REAL       NOT NULL,
+        market_cap     REAL       NOT NULL,
+        PRIMARY KEY (security_id, year, quarter),
+        FOREIGN KEY (security_id) REFERENCES securities(security_id) ON DELETE CASCADE
+    );
+    """)
+
     # --- 30%下落判定結果テーブル ---
     conn.execute("""
     CREATE TABLE IF NOT EXISTS drop_judgement (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        id            INTEGER PRIMARY KEY AUTOINCREMENT,
         security_code TEXT,
-        year TEXT,
-        half TEXT,
-        drop_30pct INTEGER,
-        judged_at TEXT
+        year          TEXT,
+        quarter       TEXT,      -- half → quarter に変更
+        drop_30pct    INTEGER,
+        judged_at     TEXT
     );
     """)
+
 
     conn.commit()
     conn.close()
